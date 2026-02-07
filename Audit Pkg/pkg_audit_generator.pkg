@@ -1,0 +1,252 @@
+CREATE OR REPLACE PACKAGE BODY pkg_audit_generator AS
+    c_null_token CONSTANT VARCHAR2(20) := '#~NULL~#';
+
+    FUNCTION normalize_name(p_name IN VARCHAR2) RETURN VARCHAR2 IS
+    BEGIN
+        RETURN UPPER(DBMS_ASSERT.SIMPLE_SQL_NAME(TRIM(p_name)));
+    END normalize_name;
+
+    FUNCTION default_trigger_name(p_table_name IN VARCHAR2) RETURN VARCHAR2 IS
+    BEGIN
+        RETURN 'TRG_AUD_' || SUBSTR(p_table_name, 1, 22);
+    END default_trigger_name;
+
+    FUNCTION is_supported_type(p_data_type IN VARCHAR2) RETURN BOOLEAN IS
+    BEGIN
+        RETURN p_data_type IN (
+            'CHAR', 'VARCHAR2', 'NCHAR', 'NVARCHAR2',
+            'NUMBER', 'FLOAT', 'BINARY_FLOAT', 'BINARY_DOUBLE',
+            'DATE', 'TIMESTAMP', 'TIMESTAMP WITH TIME ZONE',
+            'TIMESTAMP WITH LOCAL TIME ZONE',
+            'INTERVAL YEAR TO MONTH', 'INTERVAL DAY TO SECOND',
+            'CLOB', 'NCLOB'
+        );
+    END is_supported_type;
+
+    FUNCTION value_expr(
+        p_alias      IN VARCHAR2,
+        p_column     IN VARCHAR2,
+        p_data_type  IN VARCHAR2
+    ) RETURN VARCHAR2 IS
+        v_col VARCHAR2(4000);
+    BEGIN
+        v_col := p_alias || '."' || p_column || '"';
+
+        IF p_data_type IN ('CHAR', 'VARCHAR2', 'NCHAR', 'NVARCHAR2') THEN
+            RETURN v_col;
+        ELSIF p_data_type IN ('NUMBER', 'FLOAT', 'BINARY_FLOAT', 'BINARY_DOUBLE') THEN
+            RETURN 'TO_CHAR(' || v_col || ')';
+        ELSIF p_data_type = 'DATE' THEN
+            RETURN 'TO_CHAR(' || v_col || ', ''YYYY-MM-DD HH24:MI:SS'')';
+        ELSIF p_data_type = 'TIMESTAMP' THEN
+            RETURN 'TO_CHAR(' || v_col || ', ''YYYY-MM-DD HH24:MI:SS.FF6'')';
+        ELSIF p_data_type IN ('TIMESTAMP WITH TIME ZONE', 'TIMESTAMP WITH LOCAL TIME ZONE') THEN
+            RETURN 'TO_CHAR(' || v_col || ', ''YYYY-MM-DD HH24:MI:SS.FF6 TZH:TZM'')';
+        ELSIF p_data_type IN ('INTERVAL YEAR TO MONTH', 'INTERVAL DAY TO SECOND') THEN
+            RETURN 'TO_CHAR(' || v_col || ')';
+        ELSIF p_data_type IN ('CLOB', 'NCLOB') THEN
+            RETURN 'DBMS_LOB.SUBSTR(' || v_col || ', 4000, 1)';
+        END IF;
+
+        RETURN 'NULL';
+    END value_expr;
+
+    FUNCTION pk_expr(p_table_name IN VARCHAR2, p_alias IN VARCHAR2) RETURN VARCHAR2 IS
+        v_expr   VARCHAR2(32767);
+        v_count  PLS_INTEGER := 0;
+    BEGIN
+        FOR pk_col IN (
+            SELECT cc.column_name, tc.data_type
+            FROM user_constraints c
+            JOIN user_cons_columns cc
+                ON cc.constraint_name = c.constraint_name
+               AND cc.table_name = c.table_name
+            JOIN user_tab_columns tc
+                ON tc.table_name = cc.table_name
+               AND tc.column_name = cc.column_name
+            WHERE c.table_name = p_table_name
+              AND c.constraint_type = 'P'
+            ORDER BY cc.position
+        ) LOOP
+            v_count := v_count + 1;
+
+            IF v_count > 1 THEN
+                v_expr := v_expr || ' || ''|'' || ';
+            END IF;
+
+            v_expr := v_expr
+                || 'NVL('
+                || value_expr(p_alias, pk_col.column_name, pk_col.data_type)
+                || ', '''
+                || c_null_token
+                || ''')';
+        END LOOP;
+
+        IF v_count = 0 THEN
+            RAISE_APPLICATION_ERROR(
+                -20001,
+                'Cannot generate audit trigger: table '
+                || p_table_name
+                || ' has no primary key.'
+            );
+        END IF;
+
+        RETURN v_expr;
+    END pk_expr;
+
+    FUNCTION build_trigger_ddl(
+        p_table_name         IN VARCHAR2,
+        p_trigger_name       IN VARCHAR2,
+        p_include_insert_row IN CHAR,
+        p_include_delete_row IN CHAR
+    ) RETURN VARCHAR2 IS
+        v_ddl           VARCHAR2(32767);
+        v_pk_old_expr   VARCHAR2(32767);
+        v_pk_new_expr   VARCHAR2(32767);
+        v_has_columns   BOOLEAN := FALSE;
+    BEGIN
+        v_pk_old_expr := pk_expr(p_table_name, ':OLD');
+        v_pk_new_expr := pk_expr(p_table_name, ':NEW');
+
+        v_ddl := 'CREATE OR REPLACE TRIGGER ' || p_trigger_name || CHR(10)
+            || 'AFTER INSERT OR UPDATE OR DELETE ON "' || p_table_name || '"' || CHR(10)
+            || 'FOR EACH ROW' || CHR(10)
+            || 'DECLARE' || CHR(10)
+            || '    v_enabled      audit_config.audit_enabled%TYPE := ''N'';' || CHR(10)
+            || '    v_audit_insert audit_config.audit_insert%TYPE := ''N'';' || CHR(10)
+            || '    v_audit_update audit_config.audit_update%TYPE := ''N'';' || CHR(10)
+            || '    v_audit_delete audit_config.audit_delete%TYPE := ''N'';' || CHR(10)
+            || '    v_pk_value     VARCHAR2(100);' || CHR(10)
+            || 'BEGIN' || CHR(10)
+            || '    BEGIN' || CHR(10)
+            || '        SELECT audit_enabled, audit_insert, audit_update, audit_delete' || CHR(10)
+            || '        INTO v_enabled, v_audit_insert, v_audit_update, v_audit_delete' || CHR(10)
+            || '        FROM audit_config' || CHR(10)
+            || '        WHERE table_name = ''' || p_table_name || ''';' || CHR(10)
+            || '    EXCEPTION' || CHR(10)
+            || '        WHEN NO_DATA_FOUND THEN' || CHR(10)
+            || '            RETURN;' || CHR(10)
+            || '    END;' || CHR(10)
+            || CHR(10)
+            || '    IF v_enabled <> ''Y'' THEN' || CHR(10)
+            || '        RETURN;' || CHR(10)
+            || '    END IF;' || CHR(10)
+            || CHR(10)
+            || '    IF INSERTING AND v_audit_insert = ''Y'' THEN' || CHR(10)
+            || '        v_pk_value := ' || v_pk_new_expr || ';' || CHR(10);
+
+        IF p_include_insert_row = 'Y' THEN
+            v_ddl := v_ddl
+                || '        audit_pkg.log_change(''' || p_table_name || ''', NULL, v_pk_value, NULL, NULL, ''INSERT'');' || CHR(10);
+        END IF;
+
+        v_ddl := v_ddl
+            || '    ELSIF DELETING AND v_audit_delete = ''Y'' THEN' || CHR(10)
+            || '        v_pk_value := ' || v_pk_old_expr || ';' || CHR(10);
+
+        IF p_include_delete_row = 'Y' THEN
+            v_ddl := v_ddl
+                || '        audit_pkg.log_change(''' || p_table_name || ''', NULL, v_pk_value, NULL, NULL, ''DELETE'');' || CHR(10);
+        END IF;
+
+        v_ddl := v_ddl
+            || '    ELSIF UPDATING AND v_audit_update = ''Y'' THEN' || CHR(10)
+            || '        v_pk_value := ' || v_pk_old_expr || ';' || CHR(10);
+
+        FOR col_rec IN (
+            SELECT column_name, data_type
+            FROM user_tab_columns
+            WHERE table_name = p_table_name
+            ORDER BY column_id
+        ) LOOP
+            IF is_supported_type(col_rec.data_type) THEN
+                v_has_columns := TRUE;
+                v_ddl := v_ddl
+                    || '        IF NVL(' || value_expr(':OLD', col_rec.column_name, col_rec.data_type) || ', '''
+                    || c_null_token || ''') <> NVL(' || value_expr(':NEW', col_rec.column_name, col_rec.data_type)
+                    || ', ''' || c_null_token || ''') THEN' || CHR(10)
+                    || '            audit_pkg.log_change(''' || p_table_name || ''', '''
+                    || col_rec.column_name || ''', v_pk_value, '
+                    || value_expr(':OLD', col_rec.column_name, col_rec.data_type) || ', '
+                    || value_expr(':NEW', col_rec.column_name, col_rec.data_type) || ', ''UPDATE'');' || CHR(10)
+                    || '        END IF;' || CHR(10);
+            END IF;
+        END LOOP;
+
+        IF NOT v_has_columns THEN
+            RAISE_APPLICATION_ERROR(
+                -20002,
+                'Cannot generate audit trigger: table '
+                || p_table_name
+                || ' has no supported columns for UPDATE auditing.'
+            );
+        END IF;
+
+        v_ddl := v_ddl || '    END IF;' || CHR(10)
+            || 'END;';
+
+        RETURN v_ddl;
+    END build_trigger_ddl;
+
+    PROCEDURE generate_trigger(
+        p_table_name         IN VARCHAR2,
+        p_trigger_name       IN VARCHAR2 DEFAULT NULL,
+        p_include_insert_row IN CHAR DEFAULT 'Y',
+        p_include_delete_row IN CHAR DEFAULT 'Y'
+    ) IS
+        v_table_name   VARCHAR2(30);
+        v_trigger_name VARCHAR2(30);
+        v_ddl          VARCHAR2(32767);
+        v_exists       PLS_INTEGER;
+    BEGIN
+        v_table_name := normalize_name(p_table_name);
+        v_trigger_name := normalize_name(NVL(p_trigger_name, default_trigger_name(v_table_name)));
+
+        IF p_include_insert_row NOT IN ('Y', 'N') THEN
+            RAISE_APPLICATION_ERROR(-20003, 'p_include_insert_row must be Y or N.');
+        END IF;
+
+        IF p_include_delete_row NOT IN ('Y', 'N') THEN
+            RAISE_APPLICATION_ERROR(-20004, 'p_include_delete_row must be Y or N.');
+        END IF;
+
+        SELECT COUNT(*)
+        INTO v_exists
+        FROM user_tables
+        WHERE table_name = v_table_name;
+
+        IF v_exists = 0 THEN
+            RAISE_APPLICATION_ERROR(-20005, 'Table not found in current schema: ' || v_table_name);
+        END IF;
+
+        v_ddl := build_trigger_ddl(
+            p_table_name         => v_table_name,
+            p_trigger_name       => v_trigger_name,
+            p_include_insert_row => p_include_insert_row,
+            p_include_delete_row => p_include_delete_row
+        );
+
+        EXECUTE IMMEDIATE v_ddl;
+    END generate_trigger;
+
+    PROCEDURE drop_trigger(
+        p_table_name   IN VARCHAR2,
+        p_trigger_name IN VARCHAR2 DEFAULT NULL
+    ) IS
+        v_table_name   VARCHAR2(30);
+        v_trigger_name VARCHAR2(30);
+    BEGIN
+        v_table_name := normalize_name(p_table_name);
+        v_trigger_name := normalize_name(NVL(p_trigger_name, default_trigger_name(v_table_name)));
+
+        BEGIN
+            EXECUTE IMMEDIATE 'DROP TRIGGER ' || v_trigger_name;
+        EXCEPTION
+            WHEN OTHERS THEN
+                IF SQLCODE != -4080 THEN
+                    RAISE;
+                END IF;
+        END;
+    END drop_trigger;
+END pkg_audit_generator;
+/
