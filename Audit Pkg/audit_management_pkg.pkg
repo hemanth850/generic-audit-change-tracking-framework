@@ -1,0 +1,64 @@
+CREATE OR REPLACE PACKAGE BODY audit_pkg AS
+
+    PROCEDURE enable_audit (
+        p_table_name IN VARCHAR2,
+        p_ins        IN CHAR,
+        p_upd        IN CHAR,
+        p_del        IN CHAR
+    ) IS
+    BEGIN
+        MERGE INTO audit_config c
+        USING (SELECT UPPER(p_table_name) table_name FROM dual) d
+        ON (c.table_name = d.table_name)
+        WHEN MATCHED THEN
+            UPDATE SET
+                audit_enabled = 'Y',
+                audit_insert  = p_ins,
+                audit_update  = p_upd,
+                audit_delete  = p_del
+        WHEN NOT MATCHED THEN
+            INSERT VALUES (
+                UPPER(p_table_name), 'Y', p_ins, p_upd, p_del, SYSDATE
+            );
+    END;
+
+    PROCEDURE disable_audit (
+        p_table_name IN VARCHAR2
+    ) IS
+    BEGIN
+        UPDATE audit_config
+        SET audit_enabled = 'N'
+        WHERE table_name = UPPER(p_table_name);
+    END;
+
+    PROCEDURE log_change (
+        p_table_name  IN VARCHAR2,
+        p_column_name IN VARCHAR2,
+        p_pk_value    IN VARCHAR2,
+        p_old_value   IN VARCHAR2,
+        p_new_value   IN VARCHAR2,
+        p_action      IN VARCHAR2
+    ) IS
+    BEGIN
+        INSERT INTO audit_log (
+            table_name,
+            column_name,
+            pk_value,
+            old_value,
+            new_value,
+            action_type,
+            changed_by
+        )
+        VALUES (
+            p_table_name,
+            p_column_name,
+            p_pk_value,
+            p_old_value,
+            p_new_value,
+            p_action,
+            NVL(SYS_CONTEXT('USERENV','SESSION_USER'), 'UNKNOWN')
+        );
+    END;
+
+END audit_pkg;
+/
