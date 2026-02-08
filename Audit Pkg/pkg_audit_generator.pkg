@@ -11,6 +11,84 @@ CREATE OR REPLACE PACKAGE BODY pkg_audit_generator AS
         RETURN 'TRG_AUD_' || SUBSTR(p_table_name, 1, 22);
     END default_trigger_name;
 
+    FUNCTION normalize_yes_no(
+        p_value     IN CHAR,
+        p_paramname IN VARCHAR2
+    ) RETURN CHAR IS
+        v_value CHAR(1) := UPPER(TRIM(p_value));
+    BEGIN
+        IF v_value NOT IN ('Y', 'N') THEN
+            RAISE_APPLICATION_ERROR(-20003, p_paramname || ' must be Y or N.');
+        END IF;
+
+        RETURN v_value;
+    END normalize_yes_no;
+
+    FUNCTION normalize_name_csv(p_csv IN VARCHAR2) RETURN VARCHAR2 IS
+        v_out   VARCHAR2(32767);
+        v_token VARCHAR2(4000);
+        v_idx   PLS_INTEGER := 1;
+    BEGIN
+        LOOP
+            v_token := REGEXP_SUBSTR(p_csv, '[^,]+', 1, v_idx);
+            EXIT WHEN v_token IS NULL;
+
+            v_token := normalize_name(v_token);
+
+            IF v_out IS NULL THEN
+                v_out := v_token;
+            ELSE
+                v_out := v_out || ',' || v_token;
+            END IF;
+
+            v_idx := v_idx + 1;
+        END LOOP;
+
+        RETURN v_out;
+    END normalize_name_csv;
+
+    FUNCTION normalize_text_csv(p_csv IN VARCHAR2) RETURN VARCHAR2 IS
+        v_out   VARCHAR2(32767);
+        v_token VARCHAR2(4000);
+        v_idx   PLS_INTEGER := 1;
+    BEGIN
+        LOOP
+            v_token := REGEXP_SUBSTR(p_csv, '[^,]+', 1, v_idx);
+            EXIT WHEN v_token IS NULL;
+
+            v_token := UPPER(TRIM(v_token));
+
+            IF v_token IS NOT NULL THEN
+                IF v_out IS NULL THEN
+                    v_out := v_token;
+                ELSE
+                    v_out := v_out || ',' || v_token;
+                END IF;
+            END IF;
+
+            v_idx := v_idx + 1;
+        END LOOP;
+
+        RETURN v_out;
+    END normalize_text_csv;
+
+    FUNCTION contains_csv(
+        p_csv   IN VARCHAR2,
+        p_token IN VARCHAR2
+    ) RETURN BOOLEAN IS
+    BEGIN
+        IF p_csv IS NULL OR p_token IS NULL THEN
+            RETURN FALSE;
+        END IF;
+
+        RETURN INSTR(',' || p_csv || ',', ',' || p_token || ',') > 0;
+    END contains_csv;
+
+    FUNCTION is_lob_type(p_data_type IN VARCHAR2) RETURN BOOLEAN IS
+    BEGIN
+        RETURN p_data_type IN ('CLOB', 'NCLOB');
+    END is_lob_type;
+
     FUNCTION is_supported_type(p_data_type IN VARCHAR2) RETURN BOOLEAN IS
     BEGIN
         RETURN p_data_type IN (
@@ -51,9 +129,17 @@ CREATE OR REPLACE PACKAGE BODY pkg_audit_generator AS
         RETURN 'NULL';
     END value_expr;
 
+    PROCEDURE append_line(
+        p_ddl  IN OUT NOCOPY CLOB,
+        p_line IN VARCHAR2
+    ) IS
+    BEGIN
+        p_ddl := p_ddl || p_line || CHR(10);
+    END append_line;
+
     FUNCTION pk_expr(p_table_name IN VARCHAR2, p_alias IN VARCHAR2) RETURN VARCHAR2 IS
-        v_expr   VARCHAR2(32767);
-        v_count  PLS_INTEGER := 0;
+        v_expr  VARCHAR2(32767);
+        v_count PLS_INTEGER := 0;
     BEGIN
         FOR pk_col IN (
             SELECT cc.column_name, tc.data_type
@@ -98,60 +184,99 @@ CREATE OR REPLACE PACKAGE BODY pkg_audit_generator AS
         p_table_name         IN VARCHAR2,
         p_trigger_name       IN VARCHAR2,
         p_include_insert_row IN CHAR,
-        p_include_delete_row IN CHAR
-    ) RETURN VARCHAR2 IS
-        v_ddl           VARCHAR2(32767);
-        v_pk_old_expr   VARCHAR2(32767);
-        v_pk_new_expr   VARCHAR2(32767);
-        v_has_columns   BOOLEAN := FALSE;
+        p_include_delete_row IN CHAR,
+        p_include_columns    IN VARCHAR2,
+        p_exclude_columns    IN VARCHAR2,
+        p_skip_datatypes     IN VARCHAR2,
+        p_include_lobs       IN CHAR,
+        p_bulk_mode          IN CHAR
+    ) RETURN CLOB IS
+        v_ddl         CLOB;
+        v_pk_old_expr VARCHAR2(32767);
+        v_pk_new_expr VARCHAR2(32767);
+        v_has_columns BOOLEAN := FALSE;
+        v_take_column BOOLEAN;
     BEGIN
         v_pk_old_expr := pk_expr(p_table_name, ':OLD');
         v_pk_new_expr := pk_expr(p_table_name, ':NEW');
 
-        v_ddl := 'CREATE OR REPLACE TRIGGER ' || p_trigger_name || CHR(10)
-            || 'AFTER INSERT OR UPDATE OR DELETE ON "' || p_table_name || '"' || CHR(10)
-            || 'FOR EACH ROW' || CHR(10)
-            || 'DECLARE' || CHR(10)
-            || '    v_enabled      audit_config.audit_enabled%TYPE := ''N'';' || CHR(10)
-            || '    v_audit_insert audit_config.audit_insert%TYPE := ''N'';' || CHR(10)
-            || '    v_audit_update audit_config.audit_update%TYPE := ''N'';' || CHR(10)
-            || '    v_audit_delete audit_config.audit_delete%TYPE := ''N'';' || CHR(10)
-            || '    v_pk_value     VARCHAR2(100);' || CHR(10)
-            || 'BEGIN' || CHR(10)
-            || '    BEGIN' || CHR(10)
-            || '        SELECT audit_enabled, audit_insert, audit_update, audit_delete' || CHR(10)
-            || '        INTO v_enabled, v_audit_insert, v_audit_update, v_audit_delete' || CHR(10)
-            || '        FROM audit_config' || CHR(10)
-            || '        WHERE table_name = ''' || p_table_name || ''';' || CHR(10)
-            || '    EXCEPTION' || CHR(10)
-            || '        WHEN NO_DATA_FOUND THEN' || CHR(10)
-            || '            RETURN;' || CHR(10)
-            || '    END;' || CHR(10)
-            || CHR(10)
-            || '    IF v_enabled <> ''Y'' THEN' || CHR(10)
-            || '        RETURN;' || CHR(10)
-            || '    END IF;' || CHR(10)
-            || CHR(10)
-            || '    IF INSERTING AND v_audit_insert = ''Y'' THEN' || CHR(10)
-            || '        v_pk_value := ' || v_pk_new_expr || ';' || CHR(10);
+        append_line(v_ddl, 'CREATE OR REPLACE TRIGGER ' || p_trigger_name);
+        append_line(v_ddl, 'FOR INSERT OR UPDATE OR DELETE ON "' || p_table_name || '"');
+        append_line(v_ddl, 'COMPOUND TRIGGER');
+        append_line(v_ddl, '    v_enabled      audit_config.audit_enabled%TYPE := ''N'';');
+        append_line(v_ddl, '    v_audit_insert audit_config.audit_insert%TYPE := ''N'';');
+        append_line(v_ddl, '    v_audit_update audit_config.audit_update%TYPE := ''N'';');
+        append_line(v_ddl, '    v_audit_delete audit_config.audit_delete%TYPE := ''N'';');
+        append_line(v_ddl, '    v_pk_value     VARCHAR2(100);');
+
+        IF p_bulk_mode = 'Y' THEN
+            append_line(v_ddl, '    g_changes      audit_pkg.t_change_tab;');
+            append_line(v_ddl, '    g_idx          PLS_INTEGER := 0;');
+            append_line(v_ddl, '');
+            append_line(v_ddl, '    PROCEDURE add_change(');
+            append_line(v_ddl, '        p_table_name  IN VARCHAR2,');
+            append_line(v_ddl, '        p_column_name IN VARCHAR2,');
+            append_line(v_ddl, '        p_pk_value    IN VARCHAR2,');
+            append_line(v_ddl, '        p_old_value   IN VARCHAR2,');
+            append_line(v_ddl, '        p_new_value   IN VARCHAR2,');
+            append_line(v_ddl, '        p_action      IN VARCHAR2');
+            append_line(v_ddl, '    ) IS');
+            append_line(v_ddl, '    BEGIN');
+            append_line(v_ddl, '        g_idx := g_idx + 1;');
+            append_line(v_ddl, '        g_changes(g_idx).table_name := p_table_name;');
+            append_line(v_ddl, '        g_changes(g_idx).column_name := p_column_name;');
+            append_line(v_ddl, '        g_changes(g_idx).pk_value := p_pk_value;');
+            append_line(v_ddl, '        g_changes(g_idx).old_value := p_old_value;');
+            append_line(v_ddl, '        g_changes(g_idx).new_value := p_new_value;');
+            append_line(v_ddl, '        g_changes(g_idx).action_type := p_action;');
+            append_line(v_ddl, '    END add_change;');
+        END IF;
+
+        append_line(v_ddl, '');
+        append_line(v_ddl, '    BEFORE STATEMENT IS');
+        append_line(v_ddl, '    BEGIN');
+        append_line(v_ddl, '        BEGIN');
+        append_line(v_ddl, '            SELECT audit_enabled, audit_insert, audit_update, audit_delete');
+        append_line(v_ddl, '            INTO v_enabled, v_audit_insert, v_audit_update, v_audit_delete');
+        append_line(v_ddl, '            FROM audit_config');
+        append_line(v_ddl, '            WHERE table_name = ''' || p_table_name || ''';');
+        append_line(v_ddl, '        EXCEPTION');
+        append_line(v_ddl, '            WHEN NO_DATA_FOUND THEN');
+        append_line(v_ddl, '                NULL;');
+        append_line(v_ddl, '        END;');
+        append_line(v_ddl, '    END BEFORE STATEMENT;');
+
+        append_line(v_ddl, '');
+        append_line(v_ddl, '    AFTER EACH ROW IS');
+        append_line(v_ddl, '    BEGIN');
+        append_line(v_ddl, '        IF v_enabled <> ''Y'' THEN');
+        append_line(v_ddl, '            RETURN;');
+        append_line(v_ddl, '        END IF;');
+        append_line(v_ddl, '');
+        append_line(v_ddl, '        IF INSERTING AND v_audit_insert = ''Y'' THEN');
+        append_line(v_ddl, '            v_pk_value := ' || v_pk_new_expr || ';');
 
         IF p_include_insert_row = 'Y' THEN
-            v_ddl := v_ddl
-                || '        audit_pkg.log_change(''' || p_table_name || ''', NULL, v_pk_value, NULL, NULL, ''INSERT'');' || CHR(10);
+            IF p_bulk_mode = 'Y' THEN
+                append_line(v_ddl, '            add_change(''' || p_table_name || ''', NULL, v_pk_value, NULL, NULL, ''INSERT'');');
+            ELSE
+                append_line(v_ddl, '            audit_pkg.log_change(''' || p_table_name || ''', NULL, v_pk_value, NULL, NULL, ''INSERT'');');
+            END IF;
         END IF;
 
-        v_ddl := v_ddl
-            || '    ELSIF DELETING AND v_audit_delete = ''Y'' THEN' || CHR(10)
-            || '        v_pk_value := ' || v_pk_old_expr || ';' || CHR(10);
+        append_line(v_ddl, '        ELSIF DELETING AND v_audit_delete = ''Y'' THEN');
+        append_line(v_ddl, '            v_pk_value := ' || v_pk_old_expr || ';');
 
         IF p_include_delete_row = 'Y' THEN
-            v_ddl := v_ddl
-                || '        audit_pkg.log_change(''' || p_table_name || ''', NULL, v_pk_value, NULL, NULL, ''DELETE'');' || CHR(10);
+            IF p_bulk_mode = 'Y' THEN
+                append_line(v_ddl, '            add_change(''' || p_table_name || ''', NULL, v_pk_value, NULL, NULL, ''DELETE'');');
+            ELSE
+                append_line(v_ddl, '            audit_pkg.log_change(''' || p_table_name || ''', NULL, v_pk_value, NULL, NULL, ''DELETE'');');
+            END IF;
         END IF;
 
-        v_ddl := v_ddl
-            || '    ELSIF UPDATING AND v_audit_update = ''Y'' THEN' || CHR(10)
-            || '        v_pk_value := ' || v_pk_old_expr || ';' || CHR(10);
+        append_line(v_ddl, '        ELSIF UPDATING AND v_audit_update = ''Y'' THEN');
+        append_line(v_ddl, '            v_pk_value := ' || v_pk_old_expr || ';');
 
         FOR col_rec IN (
             SELECT column_name, data_type
@@ -159,17 +284,46 @@ CREATE OR REPLACE PACKAGE BODY pkg_audit_generator AS
             WHERE table_name = p_table_name
             ORDER BY column_id
         ) LOOP
-            IF is_supported_type(col_rec.data_type) THEN
+            v_take_column := is_supported_type(col_rec.data_type);
+
+            IF v_take_column AND p_include_lobs = 'N' AND is_lob_type(col_rec.data_type) THEN
+                v_take_column := FALSE;
+            END IF;
+
+            IF v_take_column AND p_include_columns IS NOT NULL AND NOT contains_csv(p_include_columns, col_rec.column_name) THEN
+                v_take_column := FALSE;
+            END IF;
+
+            IF v_take_column AND p_exclude_columns IS NOT NULL AND contains_csv(p_exclude_columns, col_rec.column_name) THEN
+                v_take_column := FALSE;
+            END IF;
+
+            IF v_take_column AND p_skip_datatypes IS NOT NULL AND contains_csv(p_skip_datatypes, col_rec.data_type) THEN
+                v_take_column := FALSE;
+            END IF;
+
+            IF v_take_column THEN
                 v_has_columns := TRUE;
-                v_ddl := v_ddl
-                    || '        IF NVL(' || value_expr(':OLD', col_rec.column_name, col_rec.data_type) || ', '''
+                append_line(v_ddl,
+                    '            IF NVL(' || value_expr(':OLD', col_rec.column_name, col_rec.data_type) || ', '''
                     || c_null_token || ''') <> NVL(' || value_expr(':NEW', col_rec.column_name, col_rec.data_type)
-                    || ', ''' || c_null_token || ''') THEN' || CHR(10)
-                    || '            audit_pkg.log_change(''' || p_table_name || ''', '''
-                    || col_rec.column_name || ''', v_pk_value, '
-                    || value_expr(':OLD', col_rec.column_name, col_rec.data_type) || ', '
-                    || value_expr(':NEW', col_rec.column_name, col_rec.data_type) || ', ''UPDATE'');' || CHR(10)
-                    || '        END IF;' || CHR(10);
+                    || ', ''' || c_null_token || ''') THEN');
+
+                IF p_bulk_mode = 'Y' THEN
+                    append_line(v_ddl,
+                        '                add_change(''' || p_table_name || ''', '''
+                        || col_rec.column_name || ''', v_pk_value, '
+                        || value_expr(':OLD', col_rec.column_name, col_rec.data_type) || ', '
+                        || value_expr(':NEW', col_rec.column_name, col_rec.data_type) || ', ''UPDATE'');');
+                ELSE
+                    append_line(v_ddl,
+                        '                audit_pkg.log_change(''' || p_table_name || ''', '''
+                        || col_rec.column_name || ''', v_pk_value, '
+                        || value_expr(':OLD', col_rec.column_name, col_rec.data_type) || ', '
+                        || value_expr(':NEW', col_rec.column_name, col_rec.data_type) || ', ''UPDATE'');');
+                END IF;
+
+                append_line(v_ddl, '            END IF;');
             END IF;
         END LOOP;
 
@@ -178,37 +332,82 @@ CREATE OR REPLACE PACKAGE BODY pkg_audit_generator AS
                 -20002,
                 'Cannot generate audit trigger: table '
                 || p_table_name
-                || ' has no supported columns for UPDATE auditing.'
+                || ' has no included/supported columns for UPDATE auditing.'
             );
         END IF;
 
-        v_ddl := v_ddl || '    END IF;' || CHR(10)
-            || 'END;';
+        append_line(v_ddl, '        END IF;');
+        append_line(v_ddl, '    END AFTER EACH ROW;');
+
+        IF p_bulk_mode = 'Y' THEN
+            append_line(v_ddl, '');
+            append_line(v_ddl, '    AFTER STATEMENT IS');
+            append_line(v_ddl, '    BEGIN');
+            append_line(v_ddl, '        IF v_enabled = ''Y'' AND g_changes.COUNT > 0 THEN');
+            append_line(v_ddl, '            audit_pkg.flush_changes(g_changes);');
+            append_line(v_ddl, '        END IF;');
+            append_line(v_ddl, '    END AFTER STATEMENT;');
+        END IF;
+
+        append_line(v_ddl, 'END ' || p_trigger_name || ';');
 
         RETURN v_ddl;
     END build_trigger_ddl;
+
+    PROCEDURE execute_ddl(p_ddl IN CLOB) IS
+        v_cursor INTEGER := NULL;
+    BEGIN
+        v_cursor := DBMS_SQL.OPEN_CURSOR;
+        DBMS_SQL.PARSE(v_cursor, p_ddl, DBMS_SQL.NATIVE);
+        DBMS_SQL.CLOSE_CURSOR(v_cursor);
+    EXCEPTION
+        WHEN OTHERS THEN
+            IF v_cursor IS NOT NULL THEN
+                IF DBMS_SQL.IS_OPEN(v_cursor) THEN
+                    DBMS_SQL.CLOSE_CURSOR(v_cursor);
+                END IF;
+            END IF;
+            RAISE;
+    END execute_ddl;
 
     PROCEDURE generate_trigger(
         p_table_name         IN VARCHAR2,
         p_trigger_name       IN VARCHAR2 DEFAULT NULL,
         p_include_insert_row IN CHAR DEFAULT 'Y',
-        p_include_delete_row IN CHAR DEFAULT 'Y'
+        p_include_delete_row IN CHAR DEFAULT 'Y',
+        p_include_columns    IN VARCHAR2 DEFAULT NULL,
+        p_exclude_columns    IN VARCHAR2 DEFAULT NULL,
+        p_skip_datatypes     IN VARCHAR2 DEFAULT NULL,
+        p_include_lobs       IN CHAR DEFAULT 'N',
+        p_bulk_mode          IN CHAR DEFAULT 'Y'
     ) IS
-        v_table_name   VARCHAR2(30);
-        v_trigger_name VARCHAR2(30);
-        v_ddl          VARCHAR2(32767);
-        v_exists       PLS_INTEGER;
+        v_table_name         VARCHAR2(30);
+        v_trigger_name       VARCHAR2(30);
+        v_ddl                CLOB;
+        v_exists             PLS_INTEGER;
+        v_include_insert_row CHAR(1);
+        v_include_delete_row CHAR(1);
+        v_include_lobs       CHAR(1);
+        v_bulk_mode          CHAR(1);
+        v_include_columns    VARCHAR2(32767);
+        v_exclude_columns    VARCHAR2(32767);
+        v_skip_datatypes     VARCHAR2(32767);
     BEGIN
         v_table_name := normalize_name(p_table_name);
         v_trigger_name := normalize_name(NVL(p_trigger_name, default_trigger_name(v_table_name)));
 
-        IF p_include_insert_row NOT IN ('Y', 'N') THEN
-            RAISE_APPLICATION_ERROR(-20003, 'p_include_insert_row must be Y or N.');
+        IF LENGTH(v_trigger_name) > 30 THEN
+            RAISE_APPLICATION_ERROR(-20006, 'Trigger name exceeds 30 characters: ' || v_trigger_name);
         END IF;
 
-        IF p_include_delete_row NOT IN ('Y', 'N') THEN
-            RAISE_APPLICATION_ERROR(-20004, 'p_include_delete_row must be Y or N.');
-        END IF;
+        v_include_insert_row := normalize_yes_no(p_include_insert_row, 'p_include_insert_row');
+        v_include_delete_row := normalize_yes_no(p_include_delete_row, 'p_include_delete_row');
+        v_include_lobs := normalize_yes_no(p_include_lobs, 'p_include_lobs');
+        v_bulk_mode := normalize_yes_no(p_bulk_mode, 'p_bulk_mode');
+
+        v_include_columns := normalize_name_csv(p_include_columns);
+        v_exclude_columns := normalize_name_csv(p_exclude_columns);
+        v_skip_datatypes := normalize_text_csv(p_skip_datatypes);
 
         SELECT COUNT(*)
         INTO v_exists
@@ -222,11 +421,16 @@ CREATE OR REPLACE PACKAGE BODY pkg_audit_generator AS
         v_ddl := build_trigger_ddl(
             p_table_name         => v_table_name,
             p_trigger_name       => v_trigger_name,
-            p_include_insert_row => p_include_insert_row,
-            p_include_delete_row => p_include_delete_row
+            p_include_insert_row => v_include_insert_row,
+            p_include_delete_row => v_include_delete_row,
+            p_include_columns    => v_include_columns,
+            p_exclude_columns    => v_exclude_columns,
+            p_skip_datatypes     => v_skip_datatypes,
+            p_include_lobs       => v_include_lobs,
+            p_bulk_mode          => v_bulk_mode
         );
 
-        EXECUTE IMMEDIATE v_ddl;
+        execute_ddl(v_ddl);
     END generate_trigger;
 
     PROCEDURE drop_trigger(

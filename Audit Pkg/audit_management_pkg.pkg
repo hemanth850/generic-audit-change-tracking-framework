@@ -60,5 +60,35 @@ CREATE OR REPLACE PACKAGE BODY audit_pkg AS
         );
     END;
 
+    PROCEDURE flush_changes (
+        p_changes IN t_change_tab
+    ) IS
+        v_changed_by audit_log.changed_by%TYPE := NVL(SYS_CONTEXT('USERENV','SESSION_USER'), 'UNKNOWN');
+    BEGIN
+        IF p_changes.COUNT = 0 THEN
+            RETURN;
+        END IF;
+
+        FORALL i IN INDICES OF p_changes
+            INSERT INTO audit_log (
+                table_name,
+                column_name,
+                pk_value,
+                old_value,
+                new_value,
+                action_type,
+                changed_by
+            )
+            VALUES (
+                p_changes(i).table_name,
+                p_changes(i).column_name,
+                p_changes(i).pk_value,
+                p_changes(i).old_value,
+                p_changes(i).new_value,
+                p_changes(i).action_type,
+                v_changed_by
+            );
+    END;
+
 END audit_pkg;
 /
