@@ -9,9 +9,14 @@ This repo now includes `pkg_audit_generator` to create audit triggers for any ta
 - `Audit Pkg/pkg_audit_generator.pks`
 - `Audit Pkg/pkg_audit_generator.pkg`
 - `Audit Trigger/generate_audit_trigger.sql`
+- `Audit Trigger/generate_audit_trigger_json.sql`
+- `Audit Tables/migrations/add_json_payload_to_audit_log.sql`
 
 ### Compile
 ```sql
+-- Existing databases only (new setups can run Audit Tables/audit_log.sql directly):
+@Audit Tables/migrations/add_json_payload_to_audit_log.sql
+
 @Audit Pkg/audit_management_pkg.pks
 @Audit Pkg/audit_management_pkg.pkg
 @Audit Pkg/pkg_audit_generator.pks
@@ -21,6 +26,11 @@ This repo now includes `pkg_audit_generator` to create audit triggers for any ta
 ### Generate a trigger for a table
 ```sql
 @Audit Trigger/generate_audit_trigger.sql EMP
+```
+
+### Generate a JSON-enabled trigger for a table
+```sql
+@Audit Trigger/generate_audit_trigger_json.sql EMP
 ```
 
 This will:
@@ -63,6 +73,8 @@ END;
   Comma-separated datatype names to skip in UPDATE comparison (example: `'CLOB,NCLOB,TIMESTAMP WITH TIME ZONE'`).
 - `p_include_lobs` (`Y`/`N`, default `N`):
   Avoids expensive LOB substring comparisons unless explicitly enabled.
+- `p_json_mode` (`Y`/`N`, default `N`):
+  Adds one extra `ROW_JSON` audit row per updated row with `json_payload` like `{"old": {...}, "new": {...}}`.
 
 ### Example: selective high-performance trigger
 ```sql
@@ -75,7 +87,29 @@ BEGIN
     p_exclude_columns    => 'UPDATED_AT',
     p_skip_datatypes     => 'CLOB,NCLOB',
     p_include_lobs       => 'N',
-    p_bulk_mode          => 'Y'
+    p_bulk_mode          => 'Y',
+    p_json_mode          => 'N'
+  );
+END;
+/
+```
+
+## JSON Mode (Optional, Additive)
+
+JSON mode does not replace current column-level audit rows. It adds one extra row per updated record:
+
+- `column_name = 'ROW_JSON'`
+- `action_type = 'UPDATE'`
+- `json_payload = {"old": {...}, "new": {...}}`
+
+### Example: enable JSON diff row
+```sql
+BEGIN
+  pkg_audit_generator.generate_trigger(
+    p_table_name         => 'EMP',
+    p_include_columns    => 'ENAME,SAL,DEPTNO',
+    p_bulk_mode          => 'Y',
+    p_json_mode          => 'Y'
   );
 END;
 /

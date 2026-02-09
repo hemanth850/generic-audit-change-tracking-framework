@@ -8,7 +8,8 @@ CREATE OR REPLACE PACKAGE pkg_audit_generator AS
         p_exclude_columns    IN VARCHAR2 DEFAULT NULL,
         p_skip_datatypes     IN VARCHAR2 DEFAULT NULL,
         p_include_lobs       IN CHAR DEFAULT 'N',
-        p_bulk_mode          IN CHAR DEFAULT 'Y'
+        p_bulk_mode          IN CHAR DEFAULT 'Y',
+        p_json_mode          IN CHAR DEFAULT 'N'
     );
 
     PROCEDURE drop_trigger(

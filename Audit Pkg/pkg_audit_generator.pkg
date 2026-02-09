@@ -189,7 +189,8 @@ CREATE OR REPLACE PACKAGE BODY pkg_audit_generator AS
         p_exclude_columns    IN VARCHAR2,
         p_skip_datatypes     IN VARCHAR2,
         p_include_lobs       IN CHAR,
-        p_bulk_mode          IN CHAR
+        p_bulk_mode          IN CHAR,
+        p_json_mode          IN CHAR
     ) RETURN CLOB IS
         v_ddl         CLOB;
         v_pk_old_expr VARCHAR2(32767);
@@ -203,15 +204,54 @@ CREATE OR REPLACE PACKAGE BODY pkg_audit_generator AS
         append_line(v_ddl, 'CREATE OR REPLACE TRIGGER ' || p_trigger_name);
         append_line(v_ddl, 'FOR INSERT OR UPDATE OR DELETE ON "' || p_table_name || '"');
         append_line(v_ddl, 'COMPOUND TRIGGER');
-        append_line(v_ddl, '    v_enabled      audit_config.audit_enabled%TYPE := ''N'';');
-        append_line(v_ddl, '    v_audit_insert audit_config.audit_insert%TYPE := ''N'';');
-        append_line(v_ddl, '    v_audit_update audit_config.audit_update%TYPE := ''N'';');
-        append_line(v_ddl, '    v_audit_delete audit_config.audit_delete%TYPE := ''N'';');
-        append_line(v_ddl, '    v_pk_value     VARCHAR2(100);');
+        append_line(v_ddl, '    v_enabled       audit_config.audit_enabled%TYPE := ''N'';');
+        append_line(v_ddl, '    v_audit_insert  audit_config.audit_insert%TYPE := ''N'';');
+        append_line(v_ddl, '    v_audit_update  audit_config.audit_update%TYPE := ''N'';');
+        append_line(v_ddl, '    v_audit_delete  audit_config.audit_delete%TYPE := ''N'';');
+        append_line(v_ddl, '    v_pk_value      VARCHAR2(100);');
+
+        IF p_json_mode = 'Y' THEN
+            append_line(v_ddl, '    v_json_old      CLOB;');
+            append_line(v_ddl, '    v_json_new      CLOB;');
+            append_line(v_ddl, '    v_json_old_sep  VARCHAR2(1);');
+            append_line(v_ddl, '    v_json_new_sep  VARCHAR2(1);');
+            append_line(v_ddl, '    v_json_changed  BOOLEAN := FALSE;');
+            append_line(v_ddl, '');
+            append_line(v_ddl, '    FUNCTION json_quote(p_value IN VARCHAR2) RETURN VARCHAR2 IS');
+            append_line(v_ddl, '    BEGIN');
+            append_line(v_ddl, '        IF p_value IS NULL THEN');
+            append_line(v_ddl, '            RETURN ''null'';');
+            append_line(v_ddl, '        END IF;');
+            append_line(v_ddl, '        RETURN CHR(34)');
+            append_line(v_ddl, '            || REPLACE(');
+            append_line(v_ddl, '                REPLACE(');
+            append_line(v_ddl, '                    REPLACE(');
+            append_line(v_ddl, '                        REPLACE(p_value, CHR(92), CHR(92) || CHR(92)),');
+            append_line(v_ddl, '                        CHR(34), CHR(92) || CHR(34)');
+            append_line(v_ddl, '                    ),');
+            append_line(v_ddl, '                    CHR(10), ''\n''');
+            append_line(v_ddl, '                ),');
+            append_line(v_ddl, '                CHR(13), ''\r''');
+            append_line(v_ddl, '            )');
+            append_line(v_ddl, '            || CHR(34);');
+            append_line(v_ddl, '    END json_quote;');
+            append_line(v_ddl, '');
+            append_line(v_ddl, '    PROCEDURE add_json_pair(');
+            append_line(v_ddl, '        p_json IN OUT NOCOPY CLOB,');
+            append_line(v_ddl, '        p_sep  IN OUT VARCHAR2,');
+            append_line(v_ddl, '        p_key  IN VARCHAR2,');
+            append_line(v_ddl, '        p_val  IN VARCHAR2');
+            append_line(v_ddl, '    ) IS');
+            append_line(v_ddl, '    BEGIN');
+            append_line(v_ddl, '        p_json := p_json || p_sep || ''"'' || p_key || ''":'' || json_quote(p_val);');
+            append_line(v_ddl, '        p_sep := '','';');
+            append_line(v_ddl, '    END add_json_pair;');
+        END IF;
 
         IF p_bulk_mode = 'Y' THEN
-            append_line(v_ddl, '    g_changes      audit_pkg.t_change_tab;');
-            append_line(v_ddl, '    g_idx          PLS_INTEGER := 0;');
+            append_line(v_ddl, '');
+            append_line(v_ddl, '    g_changes       audit_pkg.t_change_tab;');
+            append_line(v_ddl, '    g_idx           PLS_INTEGER := 0;');
             append_line(v_ddl, '');
             append_line(v_ddl, '    PROCEDURE add_change(');
             append_line(v_ddl, '        p_table_name  IN VARCHAR2,');
@@ -219,7 +259,8 @@ CREATE OR REPLACE PACKAGE BODY pkg_audit_generator AS
             append_line(v_ddl, '        p_pk_value    IN VARCHAR2,');
             append_line(v_ddl, '        p_old_value   IN VARCHAR2,');
             append_line(v_ddl, '        p_new_value   IN VARCHAR2,');
-            append_line(v_ddl, '        p_action      IN VARCHAR2');
+            append_line(v_ddl, '        p_action      IN VARCHAR2,');
+            append_line(v_ddl, '        p_change_json IN CLOB DEFAULT NULL');
             append_line(v_ddl, '    ) IS');
             append_line(v_ddl, '    BEGIN');
             append_line(v_ddl, '        g_idx := g_idx + 1;');
@@ -228,6 +269,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_audit_generator AS
             append_line(v_ddl, '        g_changes(g_idx).pk_value := p_pk_value;');
             append_line(v_ddl, '        g_changes(g_idx).old_value := p_old_value;');
             append_line(v_ddl, '        g_changes(g_idx).new_value := p_new_value;');
+            append_line(v_ddl, '        g_changes(g_idx).json_payload := p_change_json;');
             append_line(v_ddl, '        g_changes(g_idx).action_type := p_action;');
             append_line(v_ddl, '    END add_change;');
         END IF;
@@ -278,6 +320,14 @@ CREATE OR REPLACE PACKAGE BODY pkg_audit_generator AS
         append_line(v_ddl, '        ELSIF UPDATING AND v_audit_update = ''Y'' THEN');
         append_line(v_ddl, '            v_pk_value := ' || v_pk_old_expr || ';');
 
+        IF p_json_mode = 'Y' THEN
+            append_line(v_ddl, '            v_json_old := ''{'';');
+            append_line(v_ddl, '            v_json_new := ''{'';');
+            append_line(v_ddl, '            v_json_old_sep := NULL;');
+            append_line(v_ddl, '            v_json_new_sep := NULL;');
+            append_line(v_ddl, '            v_json_changed := FALSE;');
+        END IF;
+
         FOR col_rec IN (
             SELECT column_name, data_type
             FROM user_tab_columns
@@ -323,6 +373,16 @@ CREATE OR REPLACE PACKAGE BODY pkg_audit_generator AS
                         || value_expr(':NEW', col_rec.column_name, col_rec.data_type) || ', ''UPDATE'');');
                 END IF;
 
+                IF p_json_mode = 'Y' THEN
+                    append_line(v_ddl,
+                        '                add_json_pair(v_json_old, v_json_old_sep, ''' || col_rec.column_name || ''', '
+                        || value_expr(':OLD', col_rec.column_name, col_rec.data_type) || ');');
+                    append_line(v_ddl,
+                        '                add_json_pair(v_json_new, v_json_new_sep, ''' || col_rec.column_name || ''', '
+                        || value_expr(':NEW', col_rec.column_name, col_rec.data_type) || ');');
+                    append_line(v_ddl, '                v_json_changed := TRUE;');
+                END IF;
+
                 append_line(v_ddl, '            END IF;');
             END IF;
         END LOOP;
@@ -334,6 +394,22 @@ CREATE OR REPLACE PACKAGE BODY pkg_audit_generator AS
                 || p_table_name
                 || ' has no included/supported columns for UPDATE auditing.'
             );
+        END IF;
+
+        IF p_json_mode = 'Y' THEN
+            append_line(v_ddl, '            IF v_json_changed THEN');
+            append_line(v_ddl, '                v_json_old := v_json_old || ''}'';');
+            append_line(v_ddl, '                v_json_new := v_json_new || ''}'';');
+            IF p_bulk_mode = 'Y' THEN
+                append_line(v_ddl,
+                    '                add_change(''' || p_table_name || ''', ''ROW_JSON'', v_pk_value, NULL, NULL, ''UPDATE'', '
+                    || '''{"old":'' || v_json_old || '',''"new":'' || v_json_new || ''}'');');
+            ELSE
+                append_line(v_ddl,
+                    '                audit_pkg.log_change(''' || p_table_name || ''', ''ROW_JSON'', v_pk_value, NULL, NULL, ''UPDATE'', '
+                    || '''{"old":'' || v_json_old || '',''"new":'' || v_json_new || ''}'');');
+            END IF;
+            append_line(v_ddl, '            END IF;');
         END IF;
 
         append_line(v_ddl, '        END IF;');
@@ -379,7 +455,8 @@ CREATE OR REPLACE PACKAGE BODY pkg_audit_generator AS
         p_exclude_columns    IN VARCHAR2 DEFAULT NULL,
         p_skip_datatypes     IN VARCHAR2 DEFAULT NULL,
         p_include_lobs       IN CHAR DEFAULT 'N',
-        p_bulk_mode          IN CHAR DEFAULT 'Y'
+        p_bulk_mode          IN CHAR DEFAULT 'Y',
+        p_json_mode          IN CHAR DEFAULT 'N'
     ) IS
         v_table_name         VARCHAR2(30);
         v_trigger_name       VARCHAR2(30);
@@ -389,6 +466,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_audit_generator AS
         v_include_delete_row CHAR(1);
         v_include_lobs       CHAR(1);
         v_bulk_mode          CHAR(1);
+        v_json_mode          CHAR(1);
         v_include_columns    VARCHAR2(32767);
         v_exclude_columns    VARCHAR2(32767);
         v_skip_datatypes     VARCHAR2(32767);
@@ -404,6 +482,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_audit_generator AS
         v_include_delete_row := normalize_yes_no(p_include_delete_row, 'p_include_delete_row');
         v_include_lobs := normalize_yes_no(p_include_lobs, 'p_include_lobs');
         v_bulk_mode := normalize_yes_no(p_bulk_mode, 'p_bulk_mode');
+        v_json_mode := normalize_yes_no(p_json_mode, 'p_json_mode');
 
         v_include_columns := normalize_name_csv(p_include_columns);
         v_exclude_columns := normalize_name_csv(p_exclude_columns);
@@ -427,7 +506,8 @@ CREATE OR REPLACE PACKAGE BODY pkg_audit_generator AS
             p_exclude_columns    => v_exclude_columns,
             p_skip_datatypes     => v_skip_datatypes,
             p_include_lobs       => v_include_lobs,
-            p_bulk_mode          => v_bulk_mode
+            p_bulk_mode          => v_bulk_mode,
+            p_json_mode          => v_json_mode
         );
 
         execute_ddl(v_ddl);

@@ -5,6 +5,7 @@ CREATE OR REPLACE PACKAGE audit_pkg AS
         pk_value    audit_log.pk_value%TYPE,
         old_value   audit_log.old_value%TYPE,
         new_value   audit_log.new_value%TYPE,
+        json_payload audit_log.json_payload%TYPE,
         action_type audit_log.action_type%TYPE
     );
 
@@ -27,7 +28,8 @@ CREATE OR REPLACE PACKAGE audit_pkg AS
         p_pk_value    IN VARCHAR2,
         p_old_value   IN VARCHAR2,
         p_new_value   IN VARCHAR2,
-        p_action      IN VARCHAR2
+        p_action      IN VARCHAR2,
+        p_change_json IN CLOB DEFAULT NULL
     );
 
     PROCEDURE flush_changes (

@@ -5,6 +5,7 @@ CREATE TABLE audit_log (
     pk_value        VARCHAR2(100),
     old_value       VARCHAR2(4000),
     new_value       VARCHAR2(4000),
+    json_payload    CLOB,
     action_type     VARCHAR2(10),
     changed_by      VARCHAR2(30),
     changed_at      DATE DEFAULT SYSDATE
