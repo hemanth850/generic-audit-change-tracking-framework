@@ -37,7 +37,8 @@ CREATE OR REPLACE PACKAGE BODY audit_pkg AS
         p_pk_value    IN VARCHAR2,
         p_old_value   IN VARCHAR2,
         p_new_value   IN VARCHAR2,
-        p_action      IN VARCHAR2
+        p_action      IN VARCHAR2,
+        p_change_json IN CLOB DEFAULT NULL
     ) IS
     BEGIN
         INSERT INTO audit_log (
@@ -46,6 +47,7 @@ CREATE OR REPLACE PACKAGE BODY audit_pkg AS
             pk_value,
             old_value,
             new_value,
+            json_payload,
             action_type,
             changed_by
         )
@@ -55,6 +57,7 @@ CREATE OR REPLACE PACKAGE BODY audit_pkg AS
             p_pk_value,
             p_old_value,
             p_new_value,
+            p_change_json,
             p_action,
             NVL(SYS_CONTEXT('USERENV','SESSION_USER'), 'UNKNOWN')
         );
@@ -76,6 +79,7 @@ CREATE OR REPLACE PACKAGE BODY audit_pkg AS
                 pk_value,
                 old_value,
                 new_value,
+                json_payload,
                 action_type,
                 changed_by
             )
@@ -85,6 +89,7 @@ CREATE OR REPLACE PACKAGE BODY audit_pkg AS
                 p_changes(i).pk_value,
                 p_changes(i).old_value,
                 p_changes(i).new_value,
+                p_changes(i).json_payload,
                 p_changes(i).action_type,
                 v_changed_by
             );
