@@ -10,12 +10,19 @@ This repo now includes `pkg_audit_generator` to create audit triggers for any ta
 - `Audit Pkg/pkg_audit_generator.pkg`
 - `Audit Trigger/generate_audit_trigger.sql`
 - `Audit Trigger/generate_audit_trigger_json.sql`
+- `Audit Trigger/save_audit_generator_config.sql`
+- `Audit Trigger/generate_audit_trigger_from_config.sql`
 - `Audit Tables/migrations/add_json_payload_to_audit_log.sql`
+- `Audit Tables/audit_generator_config.sql`
+- `Audit Tables/audit_generated_trigger.sql`
 
 ### Compile
 ```sql
 -- Existing databases only (new setups can run Audit Tables/audit_log.sql directly):
 @Audit Tables/migrations/add_json_payload_to_audit_log.sql
+
+@Audit Tables/audit_generator_config.sql
+@Audit Tables/audit_generated_trigger.sql
 
 @Audit Pkg/audit_management_pkg.pks
 @Audit Pkg/audit_management_pkg.pkg
@@ -57,6 +64,21 @@ BEGIN
   );
 END;
 /
+```
+
+## Operational Controls (Step 3)
+
+`pkg_audit_generator` now supports persistent config and generation metadata:
+
+- `save_config(...)`: Store per-table trigger generation options.
+- `clear_config(...)`: Remove saved config for a table.
+- `generate_trigger_from_config(...)`: Generate trigger using saved options.
+- `audit_generated_trigger`: Tracks the latest generated trigger/options per table.
+
+### Example: save once, generate many times
+```sql
+@Audit Trigger/save_audit_generator_config.sql EMP
+@Audit Trigger/generate_audit_trigger_from_config.sql EMP
 ```
 
 ## Performance-Focused Generator Options

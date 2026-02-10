@@ -430,6 +430,123 @@ CREATE OR REPLACE PACKAGE BODY pkg_audit_generator AS
         RETURN v_ddl;
     END build_trigger_ddl;
 
+    PROCEDURE upsert_config(
+        p_table_name         IN VARCHAR2,
+        p_trigger_name       IN VARCHAR2,
+        p_include_insert_row IN CHAR,
+        p_include_delete_row IN CHAR,
+        p_include_columns    IN VARCHAR2,
+        p_exclude_columns    IN VARCHAR2,
+        p_skip_datatypes     IN VARCHAR2,
+        p_include_lobs       IN CHAR,
+        p_bulk_mode          IN CHAR,
+        p_json_mode          IN CHAR
+    ) IS
+    BEGIN
+        MERGE INTO audit_generator_config c
+        USING (
+            SELECT
+                p_table_name AS table_name,
+                p_trigger_name AS trigger_name,
+                p_include_insert_row AS include_insert_row,
+                p_include_delete_row AS include_delete_row,
+                p_include_columns AS include_columns,
+                p_exclude_columns AS exclude_columns,
+                p_skip_datatypes AS skip_datatypes,
+                p_include_lobs AS include_lobs,
+                p_bulk_mode AS bulk_mode,
+                p_json_mode AS json_mode
+            FROM dual
+        ) d
+        ON (c.table_name = d.table_name)
+        WHEN MATCHED THEN
+            UPDATE SET
+                c.trigger_name = d.trigger_name,
+                c.include_insert_row = d.include_insert_row,
+                c.include_delete_row = d.include_delete_row,
+                c.include_columns = d.include_columns,
+                c.exclude_columns = d.exclude_columns,
+                c.skip_datatypes = d.skip_datatypes,
+                c.include_lobs = d.include_lobs,
+                c.bulk_mode = d.bulk_mode,
+                c.json_mode = d.json_mode,
+                c.updated_at = SYSDATE
+        WHEN NOT MATCHED THEN
+            INSERT (
+                table_name, trigger_name, include_insert_row, include_delete_row,
+                include_columns, exclude_columns, skip_datatypes,
+                include_lobs, bulk_mode, json_mode, updated_at
+            )
+            VALUES (
+                d.table_name, d.trigger_name, d.include_insert_row, d.include_delete_row,
+                d.include_columns, d.exclude_columns, d.skip_datatypes,
+                d.include_lobs, d.bulk_mode, d.json_mode, SYSDATE
+            );
+    END upsert_config;
+
+    PROCEDURE upsert_generated_trigger(
+        p_table_name         IN VARCHAR2,
+        p_trigger_name       IN VARCHAR2,
+        p_include_insert_row IN CHAR,
+        p_include_delete_row IN CHAR,
+        p_include_columns    IN VARCHAR2,
+        p_exclude_columns    IN VARCHAR2,
+        p_skip_datatypes     IN VARCHAR2,
+        p_include_lobs       IN CHAR,
+        p_bulk_mode          IN CHAR,
+        p_json_mode          IN CHAR
+    ) IS
+        v_user VARCHAR2(30) := NVL(SYS_CONTEXT('USERENV', 'SESSION_USER'), 'UNKNOWN');
+    BEGIN
+        MERGE INTO audit_generated_trigger g
+        USING (
+            SELECT
+                p_table_name AS table_name,
+                p_trigger_name AS trigger_name,
+                p_include_insert_row AS include_insert_row,
+                p_include_delete_row AS include_delete_row,
+                p_include_columns AS include_columns,
+                p_exclude_columns AS exclude_columns,
+                p_skip_datatypes AS skip_datatypes,
+                p_include_lobs AS include_lobs,
+                p_bulk_mode AS bulk_mode,
+                p_json_mode AS json_mode,
+                v_user AS generated_by
+            FROM dual
+        ) d
+        ON (g.table_name = d.table_name)
+        WHEN MATCHED THEN
+            UPDATE SET
+                g.trigger_name = d.trigger_name,
+                g.include_insert_row = d.include_insert_row,
+                g.include_delete_row = d.include_delete_row,
+                g.include_columns = d.include_columns,
+                g.exclude_columns = d.exclude_columns,
+                g.skip_datatypes = d.skip_datatypes,
+                g.include_lobs = d.include_lobs,
+                g.bulk_mode = d.bulk_mode,
+                g.json_mode = d.json_mode,
+                g.generated_by = d.generated_by,
+                g.generated_at = SYSDATE
+        WHEN NOT MATCHED THEN
+            INSERT (
+                table_name, trigger_name, include_insert_row, include_delete_row,
+                include_columns, exclude_columns, skip_datatypes,
+                include_lobs, bulk_mode, json_mode, generated_by, generated_at
+            )
+            VALUES (
+                d.table_name, d.trigger_name, d.include_insert_row, d.include_delete_row,
+                d.include_columns, d.exclude_columns, d.skip_datatypes,
+                d.include_lobs, d.bulk_mode, d.json_mode, d.generated_by, SYSDATE
+            );
+    END upsert_generated_trigger;
+
+    PROCEDURE delete_generated_trigger(p_table_name IN VARCHAR2) IS
+    BEGIN
+        DELETE FROM audit_generated_trigger
+        WHERE table_name = p_table_name;
+    END delete_generated_trigger;
+
     PROCEDURE execute_ddl(p_ddl IN CLOB) IS
         v_cursor INTEGER := NULL;
     BEGIN
@@ -445,6 +562,71 @@ CREATE OR REPLACE PACKAGE BODY pkg_audit_generator AS
             END IF;
             RAISE;
     END execute_ddl;
+
+    PROCEDURE save_config(
+        p_table_name         IN VARCHAR2,
+        p_trigger_name       IN VARCHAR2 DEFAULT NULL,
+        p_include_insert_row IN CHAR DEFAULT 'Y',
+        p_include_delete_row IN CHAR DEFAULT 'Y',
+        p_include_columns    IN VARCHAR2 DEFAULT NULL,
+        p_exclude_columns    IN VARCHAR2 DEFAULT NULL,
+        p_skip_datatypes     IN VARCHAR2 DEFAULT NULL,
+        p_include_lobs       IN CHAR DEFAULT 'N',
+        p_bulk_mode          IN CHAR DEFAULT 'Y',
+        p_json_mode          IN CHAR DEFAULT 'N'
+    ) IS
+        v_table_name         VARCHAR2(30);
+        v_trigger_name       VARCHAR2(30);
+        v_include_insert_row CHAR(1);
+        v_include_delete_row CHAR(1);
+        v_include_lobs       CHAR(1);
+        v_bulk_mode          CHAR(1);
+        v_json_mode          CHAR(1);
+        v_include_columns    VARCHAR2(32767);
+        v_exclude_columns    VARCHAR2(32767);
+        v_skip_datatypes     VARCHAR2(32767);
+    BEGIN
+        v_table_name := normalize_name(p_table_name);
+        v_trigger_name := normalize_name(NVL(p_trigger_name, default_trigger_name(v_table_name)));
+
+        IF LENGTH(v_trigger_name) > 30 THEN
+            RAISE_APPLICATION_ERROR(-20006, 'Trigger name exceeds 30 characters: ' || v_trigger_name);
+        END IF;
+
+        v_include_insert_row := normalize_yes_no(p_include_insert_row, 'p_include_insert_row');
+        v_include_delete_row := normalize_yes_no(p_include_delete_row, 'p_include_delete_row');
+        v_include_lobs := normalize_yes_no(p_include_lobs, 'p_include_lobs');
+        v_bulk_mode := normalize_yes_no(p_bulk_mode, 'p_bulk_mode');
+        v_json_mode := normalize_yes_no(p_json_mode, 'p_json_mode');
+
+        v_include_columns := normalize_name_csv(p_include_columns);
+        v_exclude_columns := normalize_name_csv(p_exclude_columns);
+        v_skip_datatypes := normalize_text_csv(p_skip_datatypes);
+
+        upsert_config(
+            p_table_name         => v_table_name,
+            p_trigger_name       => v_trigger_name,
+            p_include_insert_row => v_include_insert_row,
+            p_include_delete_row => v_include_delete_row,
+            p_include_columns    => v_include_columns,
+            p_exclude_columns    => v_exclude_columns,
+            p_skip_datatypes     => v_skip_datatypes,
+            p_include_lobs       => v_include_lobs,
+            p_bulk_mode          => v_bulk_mode,
+            p_json_mode          => v_json_mode
+        );
+    END save_config;
+
+    PROCEDURE clear_config(
+        p_table_name IN VARCHAR2
+    ) IS
+        v_table_name VARCHAR2(30);
+    BEGIN
+        v_table_name := normalize_name(p_table_name);
+
+        DELETE FROM audit_generator_config
+        WHERE table_name = v_table_name;
+    END clear_config;
 
     PROCEDURE generate_trigger(
         p_table_name         IN VARCHAR2,
@@ -511,7 +693,79 @@ CREATE OR REPLACE PACKAGE BODY pkg_audit_generator AS
         );
 
         execute_ddl(v_ddl);
+
+        upsert_generated_trigger(
+            p_table_name         => v_table_name,
+            p_trigger_name       => v_trigger_name,
+            p_include_insert_row => v_include_insert_row,
+            p_include_delete_row => v_include_delete_row,
+            p_include_columns    => v_include_columns,
+            p_exclude_columns    => v_exclude_columns,
+            p_skip_datatypes     => v_skip_datatypes,
+            p_include_lobs       => v_include_lobs,
+            p_bulk_mode          => v_bulk_mode,
+            p_json_mode          => v_json_mode
+        );
     END generate_trigger;
+
+    PROCEDURE generate_trigger_from_config(
+        p_table_name IN VARCHAR2
+    ) IS
+        v_table_name         VARCHAR2(30);
+        v_trigger_name       VARCHAR2(30);
+        v_include_insert_row CHAR(1);
+        v_include_delete_row CHAR(1);
+        v_include_columns    VARCHAR2(4000);
+        v_exclude_columns    VARCHAR2(4000);
+        v_skip_datatypes     VARCHAR2(4000);
+        v_include_lobs       CHAR(1);
+        v_bulk_mode          CHAR(1);
+        v_json_mode          CHAR(1);
+    BEGIN
+        v_table_name := normalize_name(p_table_name);
+
+        SELECT
+            NVL(trigger_name, default_trigger_name(v_table_name)),
+            NVL(include_insert_row, 'Y'),
+            NVL(include_delete_row, 'Y'),
+            include_columns,
+            exclude_columns,
+            skip_datatypes,
+            NVL(include_lobs, 'N'),
+            NVL(bulk_mode, 'Y'),
+            NVL(json_mode, 'N')
+        INTO
+            v_trigger_name,
+            v_include_insert_row,
+            v_include_delete_row,
+            v_include_columns,
+            v_exclude_columns,
+            v_skip_datatypes,
+            v_include_lobs,
+            v_bulk_mode,
+            v_json_mode
+        FROM audit_generator_config
+        WHERE table_name = v_table_name;
+
+        generate_trigger(
+            p_table_name         => v_table_name,
+            p_trigger_name       => v_trigger_name,
+            p_include_insert_row => v_include_insert_row,
+            p_include_delete_row => v_include_delete_row,
+            p_include_columns    => v_include_columns,
+            p_exclude_columns    => v_exclude_columns,
+            p_skip_datatypes     => v_skip_datatypes,
+            p_include_lobs       => v_include_lobs,
+            p_bulk_mode          => v_bulk_mode,
+            p_json_mode          => v_json_mode
+        );
+    EXCEPTION
+        WHEN NO_DATA_FOUND THEN
+            RAISE_APPLICATION_ERROR(
+                -20007,
+                'No generator config found for table: ' || v_table_name
+            );
+    END generate_trigger_from_config;
 
     PROCEDURE drop_trigger(
         p_table_name   IN VARCHAR2,
@@ -531,6 +785,8 @@ CREATE OR REPLACE PACKAGE BODY pkg_audit_generator AS
                     RAISE;
                 END IF;
         END;
+
+        delete_generated_trigger(v_table_name);
     END drop_trigger;
 END pkg_audit_generator;
 /
