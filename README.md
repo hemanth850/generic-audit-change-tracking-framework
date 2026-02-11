@@ -13,13 +13,17 @@ This repo now includes `pkg_audit_generator` to create audit triggers for any ta
 - `Audit Trigger/save_audit_generator_config.sql`
 - `Audit Trigger/generate_audit_trigger_from_config.sql`
 - `Audit Tables/migrations/add_json_payload_to_audit_log.sql`
+- `Audit Tables/migrations/add_audit_log_indexes.sql`
 - `Audit Tables/audit_generator_config.sql`
 - `Audit Tables/audit_generated_trigger.sql`
+- `Audit Tables/indexes/audit_log_indexes.sql`
+- `Audit Tables/partitioning/audit_log_partitioned.sql`
 
 ### Compile
 ```sql
 -- Existing databases only (new setups can run Audit Tables/audit_log.sql directly):
 @Audit Tables/migrations/add_json_payload_to_audit_log.sql
+@Audit Tables/migrations/add_audit_log_indexes.sql
 
 @Audit Tables/audit_generator_config.sql
 @Audit Tables/audit_generated_trigger.sql
@@ -146,3 +150,23 @@ END;
 - `audit_pkg.flush_changes(...)`
 
 Generated bulk-mode triggers use these for `FORALL` inserts into `audit_log`.
+
+## Audit Log Scaling (Step 4)
+
+### Existing database: add indexes
+```sql
+@Audit Tables/migrations/add_audit_log_indexes.sql
+```
+
+This adds idempotent indexes for the most common access patterns:
+
+- by table and time (`table_name, changed_at`)
+- by table/pk and time (`table_name, pk_value, changed_at`)
+- by actor and time (`changed_by, changed_at`)
+
+### New high-volume deployment: partitioned audit table
+Use:
+
+- `Audit Tables/partitioning/audit_log_partitioned.sql`
+
+It creates `audit_log` with monthly interval partitions on `changed_at` and local indexes.
