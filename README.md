@@ -12,6 +12,8 @@ This repo now includes `pkg_audit_generator` to create audit triggers for any ta
 - `Audit Trigger/generate_audit_trigger_json.sql`
 - `Audit Trigger/save_audit_generator_config.sql`
 - `Audit Trigger/generate_audit_trigger_from_config.sql`
+- `Demo/demo_end_to_end.sql`
+- `Benchmark/benchmark_bulk_mode.sql`
 - `Audit Tables/migrations/add_json_payload_to_audit_log.sql`
 - `Audit Tables/migrations/add_audit_log_indexes.sql`
 - `Audit Tables/audit_generator_config.sql`
@@ -170,3 +172,37 @@ Use:
 - `Audit Tables/partitioning/audit_log_partitioned.sql`
 
 It creates `audit_log` with monthly interval partitions on `changed_at` and local indexes.
+
+## Benchmark & Demo (Step 5)
+
+### End-to-end demo
+```sql
+@Demo/demo_end_to_end.sql
+```
+
+This script:
+
+- creates `EMPLOYEES` if missing
+- enables auditing
+- generates JSON-enabled trigger
+- runs INSERT, UPDATE, DELETE
+- shows audit rows and `ROW_JSON` payload
+
+### Bulk mode benchmark
+```sql
+@Benchmark/benchmark_bulk_mode.sql 5000
+```
+
+`5000` is the number of rows used in the workload.
+
+Output format:
+```text
+bulk_mode=N     elapsed_ms=<value> audit_rows=<value>
+bulk_mode=Y     elapsed_ms=<value> audit_rows=<value>
+```
+
+### Benchmark results template
+
+| Run Date | Row Count | bulk_mode=N (ms) | bulk_mode=Y (ms) | Speedup |
+|----------|-----------|------------------|------------------|---------|
+| YYYY-MM-DD | 5000 |  |  |  |
