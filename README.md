@@ -21,29 +21,36 @@ This repo now includes `pkg_audit_generator` to create audit triggers for any ta
 - `Audit Tables/indexes/audit_log_indexes.sql`
 - `Audit Tables/partitioning/audit_log_partitioned.sql`
 
-### Compile
+### Compile / Setup Order
 ```sql
--- Existing databases only (new setups can run Audit Tables/audit_log.sql directly):
-@Audit Tables/migrations/add_json_payload_to_audit_log.sql
-@Audit Tables/migrations/add_audit_log_indexes.sql
+-- Fresh setup:
+@"Audit Tables/audit_config.sql"
+@"Audit Tables/audit_log.sql"
+@"Audit Tables/audit_generator_config.sql"
+@"Audit Tables/audit_generated_trigger.sql"
+@"Audit Tables/indexes/audit_log_indexes.sql"
 
-@Audit Tables/audit_generator_config.sql
-@Audit Tables/audit_generated_trigger.sql
+@"Audit Pkg/audit_management_pkg.pks"
+@"Audit Pkg/audit_management_pkg.pkg"
+@"Audit Pkg/pkg_audit_generator.pks"
+@"Audit Pkg/pkg_audit_generator.pkg"
+@"Reporting View/vw_audit_history.sql"
+```
 
-@Audit Pkg/audit_management_pkg.pks
-@Audit Pkg/audit_management_pkg.pkg
-@Audit Pkg/pkg_audit_generator.pks
-@Audit Pkg/pkg_audit_generator.pkg
+```sql
+-- Existing database migrations:
+@"Audit Tables/migrations/add_json_payload_to_audit_log.sql"
+@"Audit Tables/migrations/add_audit_log_indexes.sql"
 ```
 
 ### Generate a trigger for a table
 ```sql
-@Audit Trigger/generate_audit_trigger.sql EMP
+@"Audit Trigger/generate_audit_trigger.sql" EMPLOYEES
 ```
 
 ### Generate a JSON-enabled trigger for a table
 ```sql
-@Audit Trigger/generate_audit_trigger_json.sql EMP
+@"Audit Trigger/generate_audit_trigger_json.sql" EMPLOYEES
 ```
 
 This will:
@@ -55,8 +62,8 @@ This will:
 ```sql
 BEGIN
   pkg_audit_generator.generate_trigger(
-    p_table_name         => 'EMP',
-    p_trigger_name       => 'TRG_AUDIT_EMP',
+    p_table_name         => 'EMPLOYEES',
+    p_trigger_name       => 'TRG_AUDIT_EMPLOYEES',
     p_include_insert_row => 'Y',
     p_include_delete_row => 'Y'
   );
@@ -65,8 +72,8 @@ END;
 
 BEGIN
   pkg_audit_generator.drop_trigger(
-    p_table_name   => 'EMP',
-    p_trigger_name => 'TRG_AUDIT_EMP'
+    p_table_name   => 'EMPLOYEES',
+    p_trigger_name => 'TRG_AUDIT_EMPLOYEES'
   );
 END;
 /
@@ -83,8 +90,8 @@ END;
 
 ### Example: save once, generate many times
 ```sql
-@Audit Trigger/save_audit_generator_config.sql EMP
-@Audit Trigger/generate_audit_trigger_from_config.sql EMP
+@"Audit Trigger/save_audit_generator_config.sql" EMPLOYEES
+@"Audit Trigger/generate_audit_trigger_from_config.sql" EMPLOYEES
 ```
 
 ## Performance-Focused Generator Options
@@ -108,7 +115,7 @@ END;
 ```sql
 BEGIN
   pkg_audit_generator.generate_trigger(
-    p_table_name         => 'EMP',
+    p_table_name         => 'EMPLOYEES',
     p_include_insert_row => 'Y',
     p_include_delete_row => 'Y',
     p_include_columns    => 'ENAME,SAL,DEPTNO,HIREDATE',
@@ -134,7 +141,7 @@ JSON mode does not replace current column-level audit rows. It adds one extra ro
 ```sql
 BEGIN
   pkg_audit_generator.generate_trigger(
-    p_table_name         => 'EMP',
+    p_table_name         => 'EMPLOYEES',
     p_include_columns    => 'ENAME,SAL,DEPTNO',
     p_bulk_mode          => 'Y',
     p_json_mode          => 'Y'
@@ -157,7 +164,7 @@ Generated bulk-mode triggers use these for `FORALL` inserts into `audit_log`.
 
 ### Existing database: add indexes
 ```sql
-@Audit Tables/migrations/add_audit_log_indexes.sql
+@"Audit Tables/migrations/add_audit_log_indexes.sql"
 ```
 
 This adds idempotent indexes for the most common access patterns:
@@ -177,7 +184,7 @@ It creates `audit_log` with monthly interval partitions on `changed_at` and loca
 
 ### End-to-end demo
 ```sql
-@Demo/demo_end_to_end.sql
+@"Demo/demo_end_to_end.sql"
 ```
 
 This script:
@@ -190,7 +197,7 @@ This script:
 
 ### Bulk mode benchmark
 ```sql
-@Benchmark/benchmark_bulk_mode.sql 5000
+@"Benchmark/benchmark_bulk_mode.sql" 5000
 ```
 
 `5000` is the number of rows used in the workload.
