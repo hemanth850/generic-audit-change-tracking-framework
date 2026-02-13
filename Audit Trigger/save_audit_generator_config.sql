@@ -1,5 +1,5 @@
 -- Example usage:
--- @Audit\ Trigger\save_audit_generator_config.sql EMP
+-- @"Audit Trigger/save_audit_generator_config.sql" EMPLOYEES
 
 DEFINE table_name = '&1'
 
@@ -19,4 +19,3 @@ END;
 /
 
 PROMPT Generator config saved for &&table_name.
-

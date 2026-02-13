@@ -1,9 +1,9 @@
 -- Example usage:
--- @Audit\ Pkg\audit_management_pkg.pks
--- @Audit\ Pkg\audit_management_pkg.pkg
--- @Audit\ Pkg\pkg_audit_generator.pks
--- @Audit\ Pkg\pkg_audit_generator.pkg
--- @Audit\ Trigger\generate_audit_trigger_json.sql EMP
+-- @"Audit Pkg/audit_management_pkg.pks"
+-- @"Audit Pkg/audit_management_pkg.pkg"
+-- @"Audit Pkg/pkg_audit_generator.pks"
+-- @"Audit Pkg/pkg_audit_generator.pkg"
+-- @"Audit Trigger/generate_audit_trigger_json.sql" EMPLOYEES
 
 DEFINE table_name = '&1'
 
@@ -26,4 +26,3 @@ END;
 /
 
 PROMPT JSON-enabled trigger generated for &&table_name.
-
