@@ -1,6 +1,11 @@
 # generic-audit-change-tracking-framework
 Creating a reusable auditing system that can track INSERT, UPDATE, DELETE changes on any table without rewriting logic every time.
 
+## Release Docs
+- `ARCHITECTURE.md`
+- `RUNBOOK.md`
+- `INTERVIEW_PITCH.md`
+
 ## Dynamic Trigger Generator (Step 1)
 
 This repo now includes `pkg_audit_generator` to create audit triggers for any table in the current schema.
